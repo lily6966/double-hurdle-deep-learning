@@ -2,7 +2,7 @@ import sys
 from sklearn import metrics
 import math
 import os
-from sklearn.metrics import auc
+from sklearn.metrics import roc_auc_score, precision_recall_curve, auc
 from copy import deepcopy
 import numpy as np
 import warnings
@@ -62,6 +62,14 @@ def compute_tp_fp_fn(true_targets, predictions, axis=0):
     fn = tf.reduce_sum(true_targets * tf.cast(~predictions, tf.float32), axis=axis)
     return tp, fp, fn
 
+def compute_median(tensor):
+    sorted_tensor = tf.sort(tensor)
+    middle_idx = tf.shape(sorted_tensor)[0] // 2
+    if tf.shape(sorted_tensor)[0] % 2 == 1:
+        return sorted_tensor[middle_idx]
+    else:
+        return (sorted_tensor[middle_idx - 1] + sorted_tensor[middle_idx]) / 2
+
 def example_f1_score(true_targets, predictions, per_sample=False, axis=0):
     tp, fp, fn = compute_tp_fp_fn(true_targets, predictions, axis=axis)
     numerator = 2 * tp
@@ -119,28 +127,30 @@ def compute_fdr(all_targets, all_predictions, fdr_cutoff=0.5):
 def compute_aupr(all_targets, all_predictions):
     aupr_array = []
     for i in range(all_targets.shape[1]):
-        precision, recall, thresholds = tf.metrics.precision_recall_curve(all_targets[:, i], all_predictions[:, i], pos_label=1)
-        auPR = tf.metrics.auc(recall, precision)
-        if not tf.is_nan(auPR):
-            aupr_array.append(tf.math.unsorted_segment_mean(auPR))
+        precision, recall, thresholds = precision_recall_curve(all_targets[:, i], all_predictions[:, i], pos_label=1)
+        auPR = auc(recall, precision)
+        if not tf.math.is_nan(auPR):
+            aupr_array.append(np.nan_to_num(auPR))
     aupr_array = tf.convert_to_tensor(aupr_array)
     mean_aupr = tf.reduce_mean(aupr_array)
-    median_aupr = tf.reduce_median(aupr_array)
-    var_aupr = tf.reduce_variance(aupr_array)
+    median_aupr = tf.compute_median(aupr_array)
+    var_aupr = tf.math.reduce_variance(aupr_array)
     return mean_aupr, median_aupr, var_aupr, aupr_array
+
+
 
 def compute_auc(all_targets, all_predictions):
     auc_array = []
     for i in range(all_targets.shape[1]):
         try:  
-            auROC = tf.metrics.roc_auc_score(all_targets[:, i], all_predictions[:, i])
+            auROC = roc_auc_score(all_targets[:, i], all_predictions[:, i])
             auc_array.append(auROC)
         except ValueError:
             pass
     auc_array = tf.convert_to_tensor(auc_array)
     mean_auc = tf.reduce_mean(auc_array)
-    median_auc = tf.reduce_median(auc_array)
-    var_auc = tf.reduce_variance(auc_array)
+    median_auc = compute_median(auc_array)
+    var_auc = tf.math.reduce_variance(auc_array)
     return mean_auc, median_auc, var_auc, auc_array
 
 def compute_metrics(predictions, targets, threshold, all_metrics=True):

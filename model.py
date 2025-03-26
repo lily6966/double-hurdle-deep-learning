@@ -11,74 +11,67 @@ from tensorflow import (
     maximum,
 )
 from keras import Model, layers, Sequential, backend, Variable
-
+import tensorflow as tf
+from tensorflow import nn  # Only if you need functions like nn.relu()
+from tensorflow.keras import Model, Sequential, layers, backend
 
 class VAE(Model):
     
-    def __init__(self, args):
+    def __init__(self, args, training):
         super(VAE, self).__init__()
 
         # Dropout layer
-        self.dropout = layers.Dropout(rate=1 - args["keep_prob"])
+        self.training = training
         self.args = args
         #feature layers
         input_dim = args.input_dim #+ args.meta_offset
-        self.fx1 = layers.Dense(256, input_shape=(input_dim,))
-        self.fx2 = layers.Dense(512, input_shape=(256,))
-        self.fx3 = layers.Dense(256, input_shape=(512,))
-        self.fx_mu = layers.Dense(args.latent_dim, input_shape = (256, ))
-        self.fx_logvar = layers.Dense(args.latent_dim, input_shape = (256, ))
+        self.fx1 = layers.Dense(256, input_dim=input_dim, activation=None)
+        self.fx2 = layers.Dense(512, input_dim=256, activation=None)
+        self.fx3 = layers.Dense(256, input_dim = 512, activation=None)
+        self.fx_mu = layers.Dense(args.latent_dim, input_dim = 256,  activation=None)
+        self.fx_logvar = layers.Dense(args.latent_dim, input_dim= 256, activation=None)
 
         self.emb_size = args.emb_size
 
-        self.fd_x1 = layers.Dense(512, input_shape = (input_dim + args.latent_dim, ) )
-        self.fd_x2 = Sequential(
-            nn.Linear(self.emb_size, input_shape = (512, ))
-        )
-        self.feat_mp_mu = layers.Dense(args.label_dim, input_shape = (self.emb_size, ))
-        # Feature encoder
-        self.recon = Sequential(
-            [
-                layers.Input((args["latent_dim"],)),
-                layers.Dense(512),
-                layers.ReLU(),
-                layers.Input((512, )),
-                layers.Dense(512),
-                layers.ReLU(),
-                layers.Input((input_dim, )),
-                layers.Dense(512),
-            ]
-        )
-
-        self.label_recon = Sequential(
-            layers.Input((args.latent_dim, )),
-            layers.Dense(512),
-            layers.ReLU(),
-            layers.Input((self.emb_size,)),
-            layers.Dense(512),
-            layers.LeakyReLU()
-        )
+        self.fd_x1 = layers.Dense(512, input_dim = input_dim + args.latent_dim, activation=None)
+        self.fd_x2 = Sequential([
+            layers.Dense(self.emb_size, input_dim = 512, activation=None)
+        ])
         
-          # label layers
-        self.fe0 = layers.Dense(self.emb_size, input_shape = (args["latent_dim"],))
-        self.fe1 = layers.Dense(512, input_shape = (self.emb_size,))
-        self.fe2 = layers.Dense(256, input_shape = (512,))
-        self.fe_mu = layers.Dense(args["latent_dim"], input_shape = (256,))
-        self.fe_logvar = layers.Dense(args["latent_dim"], input_shape = (256,))
+        self.feat_mp_mu = layers.Dense(args.label_dim, input_dim = self.emb_size, activation=None)
+        
+        # Reconstruction layers
+        self.recon = Sequential([
+            layers.Dense(512, activation=None),
+            layers.ReLU(),
+            layers.Dense(512, activation=None),
+            layers.ReLU(),
+            layers.Dense(input_dim, activation=None)
+        ])
+        
+        # Label reconstruction layers
+        self.label_recon = Sequential([
+            layers.Dense(512, activation=None),
+            layers.ReLU(),
+            layers.Dense(self.emb_size, activation=None),
+            layers.LeakyReLU()
+        ])
+        
+         
+        # Label layers
+        self.fe0 = self.fe0 = layers.Dense(self.emb_size, input_dim=args.label_dim, activation=None)
+        self.fe1 = layers.Dense(512, activation=None)
+        self.fe2 = layers.Dense(256, activation=None)
+        self.fe_mu = layers.Dense(args.latent_dim, activation=None)
+        self.fe_logvar = layers.Dense(args.latent_dim, activation=None)
 
+        # Feature encoding
         self.fd1 = self.fd_x1
         self.fd2 = self.fd_x2
         self.label_mp_mu = self.feat_mp_mu
 
-        self.bias = Variable(tf.zeros(shape=(args.label_dim,)), trainable=True)
-
-
-        assert id(self.fd_x1) == id(self.fd1)
-        assert id(self.fd_x2) == id(self.fd2)
-
-        self.dropout = nn.Dropout(p=args.keep_prob)
-        self.scale_coeff = args.scale_coeff
-
+        # Bias parameter (in TensorFlow, you typically define a trainable variable)
+        self.bias = tf.Variable(tf.zeros([args.label_dim]), trainable=True)
 
         self.dropout = layers.Dropout(rate=1 - args.keep_prob)
         self.scale_coeff = args.scale_coeff
@@ -109,8 +102,7 @@ class VAE(Model):
             'fx_logvar': logvar
         }
         return fx_output
-
- #--------------   
+ 
     def label_reparameterize(self, mu, logvar):
         std = tf.exp(0.5 * logvar)
         eps = tf.random.normal(shape=tf.shape(std))
@@ -154,7 +146,7 @@ class VAE(Model):
                 z = tf.linalg.matmul(x, mu) / (tf.reduce_sum(x, axis=1, keepdims=True) + 1e-8)  # mu of Gaussian Mixture
             else:
                 z = self.label_reparameterize(mu, logvar)
-
+        
         label_emb = self.label_decode(tf.concat([feat, z], axis=1))
 
         single_label_emb = tf.nn.l2_normalize(self.label_recon(mu), axis=1)  # [label_dim, emb_size]
@@ -189,41 +181,40 @@ class VAE(Model):
         fx_output['feat_recon'] = feat_recon
         return fx_output
 
-    def forward(self, input_feat, input_label_count, input_label_binary):
-        '''
-        if self.args.mode == 'classification':
-            fe_output = self.label_forward(input_label_binary, input_feat)
-        elif self.args.mode == 'regression':
-            fe_output = self.label_forward(input_label_count, input_feat)
-        else:
-            print("mode error!!!")
-            exit()
-        '''
-        fe_output = self.label_forward(input_label_binary, input_feat)
-        label_emb, single_label_emb = fe_output['label_emb'], fe_output['single_label_emb']  # [bs, emb_size], [label_dim, emb_size]
+    def call(self, input_feat, input_label_count, input_label_binary, training=False):
+        # Forward pass through the feature and label encoder
+        fe_output = self.label_forward(input_label_binary, input_feat)  # or input_label_count if regression mode
+        label_emb, single_label_emb = fe_output['label_emb'], fe_output['single_label_emb']
         
         fx_output = self.feat_forward(input_feat)
-        feat_emb, feat_emb2 = fx_output['feat_emb'], fx_output['feat_emb2']  # [bs, emb_size], [bs, emb_size]
+        feat_emb, feat_emb2 = fx_output['feat_emb'], fx_output['feat_emb2']
         
-        embs = self.fe0.weights[0]  # TensorFlow stores layer weights as a list
-    # print(embs.shape) # [emb_size, label_dim]
-
-        label_out = tf.linalg.matmul(label_emb, embs)  # [bs, emb_size] * [emb_size, label_dim] = [bs, label_dim]
-        single_label_out = tf.linalg.matmul(single_label_emb, embs)  # [label_dim, label_dim]
-
-        feat_out = tf.linalg.matmul(feat_emb, embs)  # [bs, label_dim]
-        feat_out2 = tf.linalg.matmul(feat_emb2, embs)  # [bs, label_dim]
+        # Apply the decoding steps or further processing as required
+        embs = self.fe0.weights[0]
+        embs = tf.transpose(embs)
+        label_out = tf.linalg.matmul(label_emb, embs)
+        single_label_out = tf.linalg.matmul(single_label_emb, embs)
+        
+        feat_out = tf.linalg.matmul(feat_emb, embs)
+        feat_out2 = tf.linalg.matmul(feat_emb2, embs)
 
         fe_output.update(fx_output)
         output = fe_output
-        output['embs'] = embs
-        output['label_out'] = label_out
-        output['single_label_out'] = single_label_out
-        output['feat_out'] = feat_out
-        output['feat_out2'] = feat_out2
-        output['feat'] = input_feat
-
+        # Return the outputs from the forward pass
+        output = {
+            'embs': embs,
+            'label_out': label_out,
+            'single_label_out': single_label_out,
+            'feat_out': feat_out,
+            'feat_out2': feat_out2,
+            'feat': input_feat
+        }
+        
+        output.update(fe_output)  # Add the feature encoder outputs to the final output
         return output
+
+
+
 
 def compute_loss(input_label_binary, input_label_count, output, criterion, args=None, epoch=0,
                  class_weights=None, mode='classification', pred_binary=None):

@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from tqdm import tqdm
-from utils_2 import Dataset, THRESHOLDS  
+from utlis import Dataset, THRESHOLDS  
 from model import VAE, compute_loss  
 from evals import compute_best_metrics, compute_metrics  
 import json
@@ -56,7 +56,7 @@ test_idx = np.load(args.test_idx_dir)
 
 
 # If using a specific device, you can use tf.device:
-with tf.device("cuda:0" if tf.cuda.is_available() else "cpu"):  
+with tf.device("/GPU:0" if tf.config.list_physical_devices('GPU') else "/CPU:0"):  
     feat_data = tf.convert_to_tensor(feat_data.astype(float), dtype=tf.float32)
     count_label_data = tf.convert_to_tensor(count_label_data.astype(float), dtype=tf.float32)
     binary_label_data = tf.convert_to_tensor(binary_label_data.astype(float), dtype=tf.float32)
@@ -70,7 +70,9 @@ train_dataset = training_set.shuffle(buffer_size=10000).batch(args.batch_size).p
 val_dataset = validation_set.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
 
 ## build models ##
-classifier = VAE(args).to("cuda:0" if tf.cuda.is_available() else "cpu")
+device = "/GPU:0" if tf.config.list_physical_devices('GPU') else "/CPU:0"
+with tf.device(device):
+    classifier = VAE(args, training = True)  
 
 ## optimizer, metric, scheduler etc ##
 optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr, beta_1=0.9, beta_2=0.98, epsilon=1e-6)
@@ -83,25 +85,25 @@ lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
     decay_rate=args.lr_decay,
     staircase=True
 )
-# LOOPs ###
-smooth_total_loss = 0.0
-smooth_nll_loss = 0.0
-smooth_nll_loss_x = 0.0
-smooth_kl_loss = 0.0
-smooth_cpc_loss = 0.0
-step_count = 0
 
-prediction_y = []
-prediction_x = []
-count_label_gt = []
-binary_label_gt = []
 
 best_ebf1_x = 0.0
 checkpoint_path = './TRAINED/'
 
 for epoch in range(args.max_epoch):
     # TRAINING-STAGE
-    classifier.train()
+    # LOOPs ###
+    smooth_total_loss = 0.0
+    smooth_nll_loss = 0.0
+    smooth_nll_loss_x = 0.0
+    smooth_kl_loss = 0.0
+    smooth_cpc_loss = 0.0
+    step_count = 0
+
+    prediction_y = []
+    prediction_x = []
+    count_label_gt = []
+    binary_label_gt = []
     for data in tqdm(train_dataset, mininterval=0.5, desc=f'(EPOCH:{epoch} TRAINING)', position=0, leave=True, ascii=True):
 
         input_feat, input_label_count, input_label_binary = data
@@ -113,12 +115,14 @@ for epoch in range(args.max_epoch):
         gradients = tape.gradient(total_loss, classifier.trainable_variables)
         optimizer.apply_gradients(zip(gradients, classifier.trainable_variables))
 
+        # Accumulate losses
         smooth_total_loss += total_loss.numpy()
         smooth_nll_loss += nll_loss.numpy()
         smooth_nll_loss_x += nll_loss_x.numpy()
         smooth_kl_loss += kl_loss.numpy()
         smooth_cpc_loss += cpc_loss.numpy()
 
+        # Collect predictions
         prediction_y.append(pred_e.numpy())
         prediction_x.append(pred_x.numpy())
         count_label_gt.append(input_label_count.numpy())
@@ -127,17 +131,18 @@ for epoch in range(args.max_epoch):
         step_count += 1
 
 
-        smooth_total_loss /= step_count
-        smooth_nll_loss /= step_count
-        smooth_nll_loss_x /= step_count
-        smooth_kl_loss /= step_count
-        smooth_cpc_loss /= step_count
+    # Normalize losses outside loop
+    smooth_total_loss /= step_count if step_count > 0 else 1
+    smooth_nll_loss /= step_count if step_count > 0 else 1
+    smooth_nll_loss_x /= step_count if step_count > 0 else 1
+    smooth_kl_loss /= step_count if step_count > 0 else 1
+    smooth_cpc_loss /= step_count if step_count > 0 else 1
 
-        prediction_y = np.concatenate(prediction_y, axis=0)
-        prediction_x = np.concatenate(prediction_x, axis=0)
-        count_label_gt = np.concatenate(count_label_gt, axis=0)
-        binary_label_gt = np.concatenate(binary_label_gt, axis=0)
-
+    # Concatenate predictions after epoch
+    prediction_y = np.concatenate(prediction_y, axis=0)
+    prediction_x = np.concatenate(prediction_x, axis=0)
+    count_label_gt = np.concatenate(count_label_gt, axis=0)
+    binary_label_gt = np.concatenate(binary_label_gt, axis=0)
 
 
 
@@ -159,7 +164,7 @@ for epoch in range(args.max_epoch):
     binary_label_gt = []
 
     ## validation phase
-    classifier.eval()
+ 
     for data in tqdm(val_dataset, mininterval=0.5, desc=f'(EPOCH:{epoch} VALIDATING)', position=0, leave=True, ascii=True):
         input_feat, input_label_count, input_label_binary = data
 
@@ -179,12 +184,14 @@ for epoch in range(args.max_epoch):
 
         step_count += 1
 
-        smooth_total_loss /= step_count
-    smooth_nll_loss /= step_count
-    smooth_nll_loss_x /= step_count
-    smooth_kl_loss /= step_count
-    smooth_cpc_loss /= step_count
+    # Normalize the losses
+    smooth_total_loss /= step_count if step_count > 0 else 1
+    smooth_nll_loss /= step_count if step_count > 0 else 1
+    smooth_nll_loss_x /= step_count if step_count > 0 else 1
+    smooth_kl_loss /= step_count if step_count > 0 else 1
+    smooth_cpc_loss /= step_count if step_count > 0 else 1
 
+    # Concatenate predictions and ground truth after the validation loop
     prediction_y = np.concatenate(prediction_y, axis=0)
     prediction_x = np.concatenate(prediction_x, axis=0)
     count_label_gt = np.concatenate(count_label_gt, axis=0)

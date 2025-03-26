@@ -9,7 +9,7 @@ from model import VAE, compute_loss
 from evals import compute_best_metrics, compute_metrics
 import json
 
-device = tf.device("cuda:0" if tf.cuda.is_available() else "cpu")
+device = "/GPU:0" if tf.config.list_physical_devices('GPU') else "/CPU:0"
 
 class Object(object):
     pass

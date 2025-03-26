@@ -80,12 +80,28 @@ def unfreeze_params(model, params_to_unfreeze_list):
         if attr is not None:
             attr.trainable = True
 
-class CustomDataset(tf.data.Dataset):
+class Dataset(tf.data.Dataset):
     def __new__(cls, list_IDs, features, count_labels, binary_labels):
-        dataset = tf.data.Dataset.from_tensor_slices((
-            features[list_IDs], count_labels[list_IDs], binary_labels[list_IDs]
-        ))
-        return dataset
+        'Create a new TensorFlow Dataset instance using a generator'
+        
+        def generator():
+            for ID in list_IDs:
+                feature = features[ID]
+                count = count_labels[ID]
+                binary = binary_labels[ID]
+                
+                # Ensure the count and binary labels are scalars
+                yield feature, tf.squeeze(count), tf.squeeze(binary)
+        
+        # Define the output signature to specify the shape and data type of the output
+        output_signature = (
+            tf.TensorSpec(shape=(47,), dtype=tf.float32),  # Features shape
+            tf.TensorSpec(shape=(829,), dtype=tf.float32),  # Count labels (scalar)
+            tf.TensorSpec(shape=(829,), dtype=tf.float32)   # Binary labels (scalar)
+        )
+        
+        # Create a TensorFlow dataset from the generator with the output signature
+        return tf.data.Dataset.from_generator(generator, output_signature=output_signature)
 
 def sample_generator(G, num_samples, feature):
     generated_data_all = 0
