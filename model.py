@@ -51,7 +51,7 @@ class VAE(Model):
         
         # Label reconstruction layers
         self.label_recon = Sequential([
-            layers.Dense(512, activation=None),
+            layers.Dense(512, activation=None, input_shape=(args.latent_dim,)),
             layers.ReLU(),
             layers.Dense(self.emb_size, activation=None),
             layers.LeakyReLU()
@@ -75,6 +75,30 @@ class VAE(Model):
 
         self.dropout = layers.Dropout(rate=1 - args.keep_prob)
         self.scale_coeff = args.scale_coeff
+
+    # def build(self, input_shape):
+    #         """ Define input-dependent layer configurations dynamically """
+    #         self.fx1.build(input_shape)
+    #         self.fx2.build((None, 256))
+    #         self.fx3.build((None, 512))
+    #         self.fx_mu.build((None, 256))
+    #         self.fx_logvar.build((None, 256))
+            
+    #         self.fd_x1.build((None, self.args.input_dim + self.args.latent_dim))
+    #         self.fd_x2.build((None, 512))
+    #         self.feat_mp_mu.build((None, self.emb_size))
+
+    #         self.fe0.build((None, self.args.label_dim))
+    #         self.fe1.build((None, self.emb_size))
+    #         self.fe2.build((None, 512))
+    #         self.fe_mu.build((None, 256))
+    #         self.fe_logvar.build((None, 256))
+
+    #         # Call `build()` on sequential models too
+    #         self.recon.build((None, self.args.input_dim))
+    #         self.label_recon.build((None, 512))
+
+    #         self.built = True  # Mark model as built
 
         # Label encoder
     def label_encode(self, x):

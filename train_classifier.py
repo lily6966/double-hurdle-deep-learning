@@ -5,7 +5,7 @@ from utlis import Dataset, THRESHOLDS
 from model import VAE, compute_loss  
 from evals import compute_best_metrics, compute_metrics  
 import json
-
+import os
 
 
 class Object(object):
@@ -89,6 +89,11 @@ lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
 
 best_ebf1_x = 0.0
 checkpoint_path = './TRAINED/'
+ # Ensure checkpoint directory exists
+os.makedirs(checkpoint_path, exist_ok=True)
+checkpoint_prefix = os.path.join(checkpoint_path, "ckpt")
+
+checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=classifier)
 
 for epoch in range(args.max_epoch):
     # TRAINING-STAGE
@@ -211,12 +216,13 @@ for epoch in range(args.max_epoch):
         best_ebf1_x = ebf1_x
         print("\n********** SAVING MODEL ***********")
         # Save the model using the Keras API (in TensorFlow format)
-        classifier.save(checkpoint_path + 'model_classifier')
-        print("A new model has been saved to " + checkpoint_path + 'model_classifier')
-
+        classifier.save(checkpoint_path + 'model_classifier.keras')
+        checkpoint.save(file_prefix=checkpoint_prefix)
+        print("A new model has been saved to " + checkpoint_path)
+        
         # Save args (the model parameters) to a separate file (e.g., as a JSON file)
         with open(checkpoint_path + 'args.json', 'w') as f:
-            json.dump(args, f, indent=4)
+            json.dump(vars(args), f, indent=4)
         print("\n*****************************************")
 
 

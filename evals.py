@@ -31,6 +31,7 @@ def ranking_precision_score(Y_true, Y_score, k=10):
     precision @k : float
     """
     n = len(Y_true)
+    Y_true = tf.reshape(Y_true, [-1])  # Ensure Y_true is 1D
     unique_Y = tf.unique(Y_true).y
     if len(unique_Y) > 2:
         raise ValueError("Only supported for two relevance levels.")
@@ -44,47 +45,71 @@ def ranking_precision_score(Y_true, Y_score, k=10):
     prec = n_relevant / float(k)
     return tf.reduce_mean(prec)
 
-def subset_accuracy(true_targets, predictions, per_sample=False, axis=0):
-    result = tf.reduce_all(tf.equal(true_targets, predictions), axis=axis)
-    if not per_sample:
-        result = tf.reduce_mean(tf.cast(result, tf.float32))
-    return result
+def subset_accuracy(true_targets, predictions, axis=1, per_sample=False):
+    true_targets = tf.cast(true_targets, tf.int32)  # Ensure both are int32
+    predictions = tf.cast(predictions, tf.int32)
 
-def hamming_loss(true_targets, predictions, per_sample=False, axis=0):
-    result = tf.reduce_mean(tf.cast(tf.math.logical_xor(true_targets, predictions), tf.float32), axis=axis)
-    if not per_sample:
-        result = tf.reduce_mean(result)
-    return result
+    result = tf.equal(true_targets, predictions)  # This returns a boolean tensor
+    
+    if per_sample:
+        return tf.cast(result, tf.float32)  # Return per-sample accuracy (True=1, False=0)
+    else:
+        return tf.reduce_all(result, axis=axis)  # For overall accuracy across the specified axis
 
-def compute_tp_fp_fn(true_targets, predictions, axis=0):
-    tp = tf.reduce_sum(true_targets * predictions, axis=axis)
-    fp = tf.reduce_sum(tf.cast(~true_targets, tf.float32) * predictions, axis=axis)
-    fn = tf.reduce_sum(true_targets * tf.cast(~predictions, tf.float32), axis=axis)
+
+def hamming_loss(true_targets, predictions, axis=1, per_sample=False):
+    true_targets = tf.cast(true_targets, tf.bool)  # Cast to boolean
+    predictions = tf.cast(predictions, tf.bool)  # Cast to boolean
+
+    result = tf.math.logical_xor(true_targets, predictions)  # XOR operation
+
+    if per_sample:
+        return tf.cast(result, tf.float32)  # Return per-sample loss (True=1, False=0)
+    else:
+        return tf.reduce_mean(tf.cast(result, tf.float32), axis=axis)  # Mean loss across axis
+
+def compute_tp_fp_fn(true_targets, predictions, axis=1):
+    # Convert to float32 for arithmetic operations
+    true_targets = tf.cast(true_targets, tf.float32)
+    predictions = tf.cast(predictions, tf.float32)
+
+    tp = tf.reduce_sum(true_targets * predictions, axis=axis)  # True Positives
+    fp = tf.reduce_sum((1 - true_targets) * predictions, axis=axis)  # False Positives
+    fn = tf.reduce_sum(true_targets * (1 - predictions), axis=axis)  # False Negatives
+
     return tp, fp, fn
+
 
 def compute_median(tensor):
     sorted_tensor = tf.sort(tensor)
-    middle_idx = tf.shape(sorted_tensor)[0] // 2
-    if tf.shape(sorted_tensor)[0] % 2 == 1:
-        return sorted_tensor[middle_idx]
-    else:
+    num_elements = tf.shape(sorted_tensor)[0]
+
+    # If tensor is empty, return a default value
+    if tf.equal(num_elements, 0):
+        return tf.constant(0.0, dtype=tf.float32)
+
+    middle_idx = num_elements // 2
+    if num_elements % 2 == 0:
         return (sorted_tensor[middle_idx - 1] + sorted_tensor[middle_idx]) / 2
-
-def example_f1_score(true_targets, predictions, per_sample=False, axis=0):
-    tp, fp, fn = compute_tp_fp_fn(true_targets, predictions, axis=axis)
-    numerator = 2 * tp
-    denominator = tf.reduce_sum(true_targets, axis=axis) + tf.reduce_sum(predictions, axis=axis)
-    zeros = tf.where(denominator == 0)[0]
-    denominator = tf.gather(denominator, zeros, axis=0)
-    numerator = tf.gather(numerator, zeros, axis=0)
-
-    example_f1 = numerator / denominator
-    if per_sample:
-        f1 = example_f1
     else:
-        f1 = tf.reduce_mean(example_f1)
+        return sorted_tensor[middle_idx]
 
-    return f1
+def example_f1_score(true_targets, predictions, axis=1, per_sample=False):
+    true_targets = tf.cast(true_targets, tf.float32)
+    predictions = tf.cast(predictions, tf.float32)
+
+    tp, fp, fn = compute_tp_fp_fn(true_targets, predictions, axis=axis)
+
+    denominator = tf.reduce_sum(true_targets, axis=axis) + tf.reduce_sum(predictions, axis=axis)
+    denominator = tf.where(denominator == 0, tf.ones_like(denominator), denominator)
+
+    f1 = (2 * tp) / denominator
+
+    if per_sample:
+        return f1  # return per-sample F1 scores
+    else:
+        return tf.reduce_mean(f1)  # return the mean F1 score
+
 
 def f1_score_from_stats(tp, fp, fn, average='micro'):
     assert len(tp) == len(fp)
@@ -120,20 +145,24 @@ def compute_fdr(all_targets, all_predictions, fdr_cutoff=0.5):
     
     fdr_array = tf.convert_to_tensor(fdr_array)
     mean_fdr = tf.reduce_mean(fdr_array)
-    median_fdr = tf.reduce_median(fdr_array)
-    var_fdr = tf.reduce_variance(fdr_array)
+    median_fdr = compute_median(fdr_array)
+    var_fdr = tf.math.reduce_variance(fdr_array)
     return mean_fdr, median_fdr, var_fdr, fdr_array
 
 def compute_aupr(all_targets, all_predictions):
     aupr_array = []
     for i in range(all_targets.shape[1]):
-        precision, recall, thresholds = precision_recall_curve(all_targets[:, i], all_predictions[:, i], pos_label=1)
-        auPR = auc(recall, precision)
-        if not tf.math.is_nan(auPR):
+        if np.sum(all_targets[:, i]) == 0:  # No positive class
+            auPR = 0.0  # Assign default value
+        else:
+            precision, recall, _ = precision_recall_curve(all_targets[:, i], all_predictions[:, i], pos_label=1)
+            auPR = auc(recall, precision)
+        
+        if not math.isnan(auPR):
             aupr_array.append(np.nan_to_num(auPR))
     aupr_array = tf.convert_to_tensor(aupr_array)
     mean_aupr = tf.reduce_mean(aupr_array)
-    median_aupr = tf.compute_median(aupr_array)
+    median_aupr = compute_median(aupr_array)
     var_aupr = tf.math.reduce_variance(aupr_array)
     return mean_aupr, median_aupr, var_aupr, aupr_array
 
