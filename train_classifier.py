@@ -16,7 +16,7 @@ args = Object()
 ##  define parameters ####
 args.input_dim = 47
 args.label_dim = 829
-args.max_epoch = 100
+args.max_epoch = 1
 args.batch_size = 128
 args.feat_data_dir = './DATA/CostaRica_Data_DHN/habitat_feat.npy'
 args.count_label_dir = './DATA/CostaRica_Data_DHN/count_label.npy'
@@ -217,6 +217,7 @@ for epoch in range(args.max_epoch):
         print("\n********** SAVING MODEL ***********")
         # Save the model using the Keras API (in TensorFlow format)
         classifier.save(checkpoint_path + 'model_classifier.keras')
+        classifier.save_weights("./TRAINED/model_classifier.weights.h5")
         checkpoint.save(file_prefix=checkpoint_prefix)
         print("A new model has been saved to " + checkpoint_path)
         

@@ -14,11 +14,17 @@ device = "/GPU:0" if tf.config.list_physical_devices('GPU') else "/CPU:0"
 class Object(object):
     pass
 
-with open('./TRAINED/args.json', 'r') as f:
-    args = json.load(f)
 
-# Load the model using tf.keras.models.load_model
-loaded_model = tf.keras.models.load_model('./TRAINED/model_classifier')
+
+if os.path.getsize('./TRAINED/args.json') == 0:
+    print("The file is empty.")
+else:
+    with open('./TRAINED/args.json', 'r') as f:
+        args_dict = json.load(f)
+
+# Convert back to Namespace if needed (for argparse users)
+from types import SimpleNamespace
+args = SimpleNamespace(**args_dict)
 
 
 ##  define parameters ####
@@ -58,29 +64,30 @@ val_idx = np.load(args.val_idx_dir)
 test_idx = np.load(args.test_idx_dir)
 
 # If using a specific device, you can use tf.device:
-with tf.device("cuda:0" if tf.cuda.is_available() else "cpu"):  
+with tf.device(device):  
     feat_data = tf.convert_to_tensor(feat_data.astype(float), dtype=tf.float32)
     count_label_data = tf.convert_to_tensor(count_label_data.astype(float), dtype=tf.float32)
     binary_label_data = tf.convert_to_tensor(binary_label_data.astype(float), dtype=tf.float32)
 
 ##  prepare datasets and data loader ##
 # Create TensorFlow datasets
-train_dataset = tf.data.Dataset.from_tensor_slices((feat_data[train_idx], count_label_data[train_idx], binary_label_data[train_idx]))
-val_dataset = tf.data.Dataset.from_tensor_slices((feat_data[val_idx], count_label_data[val_idx], binary_label_data[val_idx]))
+training_set = Dataset(train_idx, feat_data, count_label_data, binary_label_data)
+validation_set = Dataset(val_idx, feat_data, count_label_data, binary_label_data)
 
 # Batch the datasets
-train_dataset = train_dataset.batch(128).shuffle(1000)
-val_dataset = val_dataset.batch(128)
 
+train_dataset = training_set.shuffle(buffer_size=10000).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+val_dataset = validation_set.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
 
 ## build models ##
-regressor = VAE(args).to(device)
-classifier = VAE(args).to(device)
+regressor = VAE(args=args, training=True)  # Initialize model
+regressor.build(input_shape=(None, args.input_dim))  # Build model with correct shape
+regressor.load_weights("./TRAINED/model_classifier.weights.h5")  # Load weights
 
-# Load weights from the saved model
-checkpoint_path = "./TRAINED/model_classifier"
-regressor.load_weights(checkpoint_path)
-classifier.load_weights(checkpoint_path)
+classifier = VAE(args=args, training=True)  # Initialize model
+classifier.build(input_shape=(None, args.input_dim))  # Build model with correct shape
+classifier.load_weights("./TRAINED/model_classifier.weights.h5")  # Load weights
+
 
 # Poisson Negative Log Likelihood Loss
 criterion = tf.keras.losses.Poisson(reduction=tf.keras.losses.Reduction.NONE)
@@ -107,9 +114,7 @@ lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
 optimizer = tf.keras.optimizers.Adam(
     learning_rate=lr_schedule, beta_1=0.9, beta_2=0.98, epsilon=1e-6
 )
-import tensorflow as tf
-import numpy as np
-from tqdm import tqdm
+
 
 # Reset metrics
 smooth_total_loss = 0.0
@@ -133,7 +138,7 @@ for epoch in range(args.max_epoch):
     print(f"\n(EPOCH:{epoch} TRAINING)")
 
     # Training stage
-    for data in tqdm(train_loader, mininterval=0.5, desc=f'Epoch {epoch} Training', position=0, leave=True, ascii=True):
+    for data in tqdm(train_dataset, mininterval=0.5, desc=f'Epoch {epoch} Training', position=0, leave=True, ascii=True):
         input_feat = data[0]
         input_label_count = data[1]
         input_label_binary = data[2]
@@ -144,15 +149,18 @@ for epoch in range(args.max_epoch):
         input_label_binary = tf.convert_to_tensor(input_label_binary, dtype=tf.float32)
 
         # Classifier forward pass (no gradients needed)
-        output = classifier(input_feat, training=False)
+        output = classifier(input_feat, input_label_count, input_label_binary,training=False)
         pred_x_class_b = tf.nn.sigmoid(output['feat_out'])
 
         # Regressor forward pass with gradients
         with tf.GradientTape() as tape:
-            output = regressor(input_feat, training=True)
+            output = regressor(input_feat, input_label_count, input_label_binary, training=True)
+            
             total_loss, nll_loss, nll_loss_x, kl_loss, cpc_loss, pred_e, pred_x = compute_loss(
                 input_label_binary, input_label_count, output, criterion, mode='regression', pred_binary=pred_x_class_b
             )
+
+
 
         # Compute and apply gradients
         gradients = tape.gradient(total_loss, regressor.trainable_variables)
@@ -222,7 +230,7 @@ for epoch in range(args.max_epoch):
     prediction_b = []
 
     # Validation phase
-    for data in tqdm(val_loader, mininterval=0.5, desc=f'(EPOCH:{epoch} VALIDATING)', position=0, leave=True, ascii=True):
+    for data in tqdm(val_dataset, mininterval=0.5, desc=f'(EPOCH:{epoch} VALIDATING)', position=0, leave=True, ascii=True):
         input_feat = data[0]
         input_label_count = data[1]
         input_label_binary = data[2]
@@ -233,11 +241,11 @@ for epoch in range(args.max_epoch):
         input_label_binary = tf.convert_to_tensor(input_label_binary, dtype=tf.float32)
 
         # Classifier forward pass
-        output = classifier(input_feat, training=False)
+        output = classifier(input_feat, input_label_count, input_label_binary, training=False)
         pred_x_class_b = tf.nn.sigmoid(output['feat_out'])
 
         # Regressor forward pass
-        output = regressor(input_feat, training=False)
+        output = regressor(input_feat, input_label_count, input_label_binary, training=False)
         total_loss, nll_loss, nll_loss_x, kl_loss, cpc_loss, pred_e, pred_x = compute_loss(
             input_label_binary, input_label_count, output, criterion, mode='regression', pred_binary=pred_x_class_b
         )
@@ -282,19 +290,26 @@ for epoch in range(args.max_epoch):
     mae_x_positive_part = np.sum(ae * binary_label_gt) / np.sum(binary_label_gt)
     max_x_zero_part = np.sum(ae * (1 - binary_label_gt)) / np.sum(1 - binary_label_gt)
 
+    print("\n********** VALIDATION STATISTIC ***********")
+    print("total_loss =%.6f\t nll_loss =%.6f\t nll_loss_x =%.6f\t kl_loss =%.6f\t cpc_loss=%.6f" %
+          (smooth_total_loss,smooth_nll_loss,smooth_nll_loss_x,smooth_kl_loss,smooth_cpc_loss))
+    print("mae_x=%.6f\t mae_x_positive_part=%.6f\t mae_x_zero_part=%.6f\t" % (mae_x, mae_x_positive_part, max_x_zero_part))
+    print("\n*****************************************")
+
         # Save best model
     if best_value > mae_x_positive_part:
         best_value = mae_x_positive_part
         print("\n********** SAVING MODEL ***********")
 
         # Save model as a directory (TensorFlow-style)
-        save_path = checkpoint_path + 'model_regressor'
+        save_path = checkpoint_path + 'model_regressor.keras'
         regressor.save(save_path)
-        print("A new model has been saved to " + checkpoint_path + 'model_classifier')
+        regressor.save_weights("./TRAINED/model_regressor.weights.h5")
+        print("A new model has been saved to " + checkpoint_path + 'model_regressor.keras')
 
         # Save args (the model parameters) to a separate file (e.g., as a JSON file)
-        with open(checkpoint_path + 'args.json', 'w') as f:
-            json.dump(args, f, indent=4)
+        # with open(checkpoint_path + 'args.json', 'w') as f:
+        #     json.dump(vars(args), f, indent=4)
         print("\n*****************************************")
 
     # Reset metrics for next epoch

@@ -1,4 +1,5 @@
 import tensorflow as tf
+import keras
 from tensorflow import (
     nn,
     shape,
@@ -14,11 +15,13 @@ from keras import Model, layers, Sequential, backend, Variable
 import tensorflow as tf
 from tensorflow import nn  # Only if you need functions like nn.relu()
 from tensorflow.keras import Model, Sequential, layers, backend
+from keras.saving import register_keras_serializable
 
+@register_keras_serializable(package="Custom")
 class VAE(Model):
     
-    def __init__(self, args, training):
-        super(VAE, self).__init__()
+    def __init__(self, args, training, **kwargs):
+        super(VAE, self).__init__(**kwargs)
 
         # Dropout layer
         self.training = training
@@ -204,6 +207,7 @@ class VAE(Model):
         feat_recon = self.recon(z)
         fx_output['feat_recon'] = feat_recon
         return fx_output
+    
 
     def call(self, input_feat, input_label_count, input_label_binary, training=False):
         # Forward pass through the feature and label encoder
@@ -237,7 +241,7 @@ class VAE(Model):
         output.update(fe_output)  # Add the feature encoder outputs to the final output
         return output
 
-
+    
 
 
 def compute_loss(input_label_binary, input_label_count, output, criterion, args=None, epoch=0,
@@ -343,11 +347,19 @@ def compute_loss(input_label_binary, input_label_count, output, criterion, args=
         pred_e = tf.exp(fe_out)
         pred_x = tf.exp(fx_out)
         pred_x2 = tf.exp(fx_out2)
+        
+        # Compute the loss term using mean squared error or a custom loss
+        loss_term_e = tf.reduce_mean(criterion(tf.expand_dims(pred_e, axis=0), input_label_count), axis=-1)  # Reduce shape if needed
+        nll_loss = tf.reduce_mean(loss_term_e*tf.expand_dims(input_label_binary, axis=-1)) + 0.01 * tf.reduce_mean(tf.abs(pred_e - input_label_count))
+        
+        # Similarly for pred_x and pred_x2
+        loss_term_x = tf.reduce_mean(criterion(pred_x, input_label_count), axis=-1)
+        nll_loss_x = tf.reduce_mean(loss_term_x * tf.expand_dims(input_label_binary, axis=-1)) + 0.01 * tf.reduce_mean(tf.abs(pred_x - input_label_count))
 
-        nll_loss = tf.reduce_mean(criterion(pred_e, input_label_count) * input_label_binary) + 0.01 * tf.reduce_mean(tf.abs(pred_e - input_label_count))
-        nll_loss_x = tf.reduce_mean(criterion(pred_x, input_label_count) * input_label_binary) + 0.01 * tf.reduce_mean(tf.abs(pred_x - input_label_count))
-        nll_loss_x2 = tf.reduce_mean(criterion(pred_x2, input_label_count) * input_label_binary) + 0.01 * tf.reduce_mean(tf.abs(pred_x2 - input_label_count))
+        loss_term_x2 = tf.reduce_mean(criterion(pred_x2, input_label_count), axis=-1)
+        nll_loss_x2 = tf.reduce_mean(loss_term_x2 * tf.expand_dims(input_label_binary, axis=-1)) + 0.01 * tf.reduce_mean(tf.abs(pred_x2 - input_label_count))
 
+        
     cpc_loss = supconloss(label_emb, feat_emb, embs, sample_wise=False)
     total_loss = (nll_loss + nll_loss_x + nll_loss_x2) * 10 + kl_loss * 6.0 + 1 * cpc_loss  # + latent_cpc_loss
 
